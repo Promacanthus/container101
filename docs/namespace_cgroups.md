@@ -12,7 +12,7 @@
 
 [官方文档](https://man7.org/linux/man-pages/man7/namespaces.7.html)
 
-Namespace 的类型还有很多，查看"Linux Programmer's Manual"，可以看到 Linux 中所有的 Namespace：cgroup/ipc/network/mount/pid/time/user/uts。
+Linux 中所有的 Namespace。
 
 |Namespace|Flag|Page|Isolates|description
 |---|---|---|---|---|
