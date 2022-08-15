@@ -194,3 +194,55 @@ SigCgt: 00000000280b2603
 
 - `pids.max`：限制这个容器中允许的最大进程数目
 - `pids.current`：显示这个容器中当前运行的进程数目
+
+## 进程优雅退出
+
+> 退出前的清理通常是在 `SIGTERM(15)` 信号用户注册的 handler 里进行，如清理远端链接，清理本地数据等，可以避免远端和本地发生错误，减少丢包等问题。如果收到 `SIGKILL(9)` 就没有机会执行这些清理工作。
+
+无论是 Kubernetes 中删除 Pod 或是 Docker 停止容器，都是通过 Containerd 服务向容器的 init 进程发送一个 `SIGTERM(15)` 信号，在 init 进程退出后，容器内的其他进程也立刻退出了。需要注意的是，init 进程收到的是 `SIGTERM(15)` 信号，其他进程收到的是 `SIGKILL(9)` 信号。
+
+当 Linux 进程收到 `SIGTERM(15)` 信号并且使进程退出，这时内核处理进程退出的入口点就是 `do_exit()` 函数，它会释放进程的相关资源，比如内存，文件句柄，信号量等等。
+
+![init-sigterm](/resources/init-sigterm.webp)
+
+在做完这些工作之后，它会调用一个 `exit_notify()` 函数，用来通知和这个进程相关的父子进程等。对于容器来说，还要考虑 Pid Namespace 里的其他进程。这里调用的就是 `zap_pid_ns_processes()` 函数，而在这个函数中，如果是处于退出状态的 init 进程，它会向 Namespace 中的其他进程都发送一个 `SIGKILL(9)` 信号。
+
+为了让容器中所有的进程都收到 `SIGTREM(15)` 信号，并进行退出前的清理，可以让容器 init 进程来转发 `SIGTERM(9)` 信号，并且在收到所有子进程退出的 `SIGCHLD(17)` 信号之后， init 进程再退出。比如 Docker Container 里使用的 tini 作为 init 进程，会调用 `sigtimedwait()` 来查看自己收到的信号，然后调用 `kill()` 把信号发给子进程。
+
+> 缺省情况下，tini 转发的信号不会发送给孙子进程，当设置 kill_process_group > 0 且子进程和孙子进程在同一个 process group 时，会将信号转发给孙子进程。
+
+### 信号对应的系统调用
+
+信号是 Linux 进程收到的一个通知，进程对信号的处理包括两个问题，一个进程如何发送信号，另一个进程收到信号后如何处理。
+
+[`kill()`](https://man7.org/linux/man-pages/man2/kill.2.html) 和 [`signal()`](https://man7.org/linux/man-pages/man7/signal.7.html) 系统调用。
+
+```shell
+NAME
+       kill - send signal to a process
+
+SYNOPSIS
+       #include <sys/types.h>
+       #include <signal.h>
+
+       int kill(pid_t pid, int sig);
+
+# 参数 pid 表示把信号发送给哪个进程，如 1 就是 init 进程
+# 参数 sig 表示要发送的是信号编号，如 15 就是 SIGTERM
+
+NAME
+       signal - ANSI C signal handling
+
+SYNOPSIS
+       #include <signal.h>
+       typedef void (*sighandler_t)(int);
+       sighandler_t signal(int signum, sighandler_t handler);
+
+# 参数 signum 表示要发送的信号编号
+# 参数 handler 是一个函数指针，用来注册用户的信号 handler，这里的handler 有三个选择，缺省，捕获，忽略
+# - 缺省：一般的缺省行为有退出（terminal）、暂停（stop）或忽略（ignore），SIG_DEF 把对应信号恢复为缺省 handler
+# - 捕获：注册自定义 handler 处理 SIGTERM 信号 
+# - 忽略：注册 SIG_IGN 这个 handler 忽略对信号的处理
+
+# SIGKILL(9) 和 SIGSTOP(19) 是特权信号，使用 signal 注册自定义 hander 会收到 SIG_ERR 报错，不允许捕获。
+```
