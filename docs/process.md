@@ -246,3 +246,100 @@ SYNOPSIS
 
 # SIGKILL(9) 和 SIGSTOP(19) 是特权信号，使用 signal 注册自定义 hander 会收到 SIG_ERR 报错，不允许捕获。
 ```
+
+## CPU
+
+Kubernetes 使用 Request CPU 和 Limit CPU 来定义 CPU 相关资源，最后会通过 CPU Cgroup 的配置实现控制容器 CPU 资源的作用。
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-name
+spec:
+    ...
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "1"
+      limits:
+        memory: "128Mi"
+        cpu: "2"
+    ...
+```
+
+### CPU 使用的分类
+
+如下运行 top 命令后的输出，`%Cpu(s)`开头的这一行表示 CPU 的各种使用情况。
+
+```shell
+top - 09:00:49 up 161 days, 14:02,  0 users,  load average: 0.07, 0.08, 0.03
+Tasks: 183 total,   1 running, 182 sleeping,   0 stopped,   0 zombie
+%Cpu(s):  0.3 us,  0.3 sy,  0.0 ni, 99.3 id,  0.0 wa,  0.0 hi,  0.0 si,  0.0 st
+MiB Mem :   3935.1 total,    168.0 free,    776.3 used,   2990.8 buff/cache
+MiB Swap:      0.0 total,      0.0 free,      0.0 used.   2858.4 avail Mem 
+```
+
+如下图所示，假设只有一个 CPU 的情况下。
+
+![cpu](/resources/cpu_usage.webp)
+
+|类型|全拼|含义|描述|
+|---|---|---|---|
+|us|user|Linux 用户态 CPU 时间，不包括低优先级进程的用户态时间（nice值1-19）|普通用户程序只要没有系统调用，消耗的 CPU 都属于 us|
+|sy|system|Linux 内核态 CPU 时间|执行系统调用（如读取文件`read()`），进行一些文件系统层的操作，消耗的 CPU 属于 sy|
+|ni|nice|低优先级（nice值1-19）的进程用户态 CPU 时间|优先级比较低的进程|
+|wa|iowait|等待 Disk I/O 的时间|`read()` 系统调用向 Linux 的 Block Layer 发出 I/O Request 触发真正的磁盘读取操作，进程被设置为 TASK_UNINTERRUPTIBLE，这段时间的消耗属于 wa|
+|id|idle|系统处于空闲状态的时间|CPU 上没有需要运行的进程|
+|hi|hardware irq|CPU 处理硬中断的时间|机器收到一个网络数据包时，网卡会发出一个中断，CPU 响应中断，然后进入中断服务程序|
+|si|soft irq|CPU 处理软中断时间|发生中断后的工作必须完成，如果比较耗时就需要软中断，比如从网卡收数据包的大部分工作，都是通过软中断来处理的|
+|st|steal|同一台宿主机上的其他虚拟机抢走的 CPU 时间|在虚拟机中使用的概念|
+
+> **无论是硬中断（hi）或者软中断（si），它们的 CPU 时间都不会计入进程的 CPU 时间，这是因为本身它们在处理的时候就不属于任何一个进程**。
+
+### CPU Cgroup
+
+Cgroups 是对指定进程做计算机资源限制的，CPU Cgroup 是用来限制进程的 CPU 使用的。进程的 CPU 使用包含 2 部分，用户态的 us 和 ni 以及内核态的 sy。对于 wa、hi、si 这些 I/O 或者中断相关的 CPU 使用是不会被 CPU Cgroup 限制的。
+
+每个 Cgroups 子系统都是通过一个虚拟文件系统挂载点的方式，挂到一个缺省的目录下，CPU Cgroup 一般在 Linux 发行版里会放在 `/sys/fs/cgroup/cpu` 这个目录下。在这个子系统的目录下，每个控制组（Control Group） 都是一个子目录，各个控制组之间的关系就是一个树状的层级关系（hierarchy）。
+
+[参考文档](https://access.redhat.com/documentation/zh-cn/red_hat_enterprise_linux/7/html/resource_management_guide/sec-cpu)
+
+- 完全公平调度程序（CFS） — 一个比例分配调度程序，可根据任务优先级 ∕ 权重或 cgroup 分得的份额，在任务群组（cgroups）间按比例分配 CPU 时间（CPU 带宽）。
+- 实时调度程序（RT） — 一个任务调度程序，可对实时任务使用 CPU 的时间进行限定。一般一些嵌入式实时的程序需要实时调度。
+
+|参数|描述|默认值|备注
+|---|---|---|
+|cgroup.procs|当前控制组限制的进程号||
+|cpu.cfs_period_us|CFS 算法的调度周期|100000us=100ms|上限1m，下限100us
+|cpu.cfs_quota_us|CFS 算法中一个调度周期里这个控制组被允许的运行时间，这是绝对值| -1 |单位微秒
+|cpu.shares|控制组之间的 CPU 分配比例，整个节点 CPU 跑满的时候才能发挥作用|1024表示获得1个CPU的比例|
+|cpu.stat|报告 CPU 时间统计|nr_periods — 经过的周期间隔数（cpu.cfs_period_us），nr_throttled — cgroup 中任务被节流的次数（即耗尽所有按配额分得的可用时间后，被禁止运行），throttled_time — cgroup 中任务被节流的时间总计（以纳秒为单位）|
+|cpu.rt_period_us|设定在某个时间段中 ，每隔多久，cgroup 对 CPU 资源的存取就要重新分配|单位为微秒us|只可用于实时调度任务
+|cpu.rt_runtime_us|在某个时间段中， cgroup 中的任务对 CPU 资源的最长连续访问时间|单位为微秒us|只可用于实时调度任务
+
+> cpu.shares：控制组A（1024），控制组B（3072），那么A与B的比值是1:3,在一台 4 个 CPU 的机器上，当 group3 和 group4 都需要 4 个 CPU 的时候，它们实际分配到的 CPU 分别是这样的：group3 是 1 个，group4 是 3 个。
+
+### Kubernetes 中 CPU 资源限制
+
+- cpu.shares 对应 request 的值，将 request 的值 n  乘以 1024 设置到 cpu.shares，保证即使节点 CPU 都被占满，也能获得的 CPU 数目。
+- cpu.cfs_quota_us 对应 limit 的值，将 limit 的值 n 乘以 cpu.cfs_period_us 设置到 cpu.cfs_quota_us，保证 CPU 的使用上限。
+
+### 进程和系统 CPU 使用率
+
+top 工具主要显示了宿主机系统整体的 CPU 使用率，以及单个进程的 CPU 使用率。没有现成的工具可以得到容器 CPU 开销。
+
+#### 进程 CPU 使用率
+
+对于每个进程，在 proc 文件系统中都会每个进程对应的 [stat 文件（`/proc/[pid]/stat`）](https://man7.org/linux/man-pages/man5/proc.5.html)实时输出了进程的状态信息，比如进程的运行态（Running 还是 Sleeping）、父进程 PID、进程优先级、进程使用的内存等等总共 50 多项。
+
+重点关注以下两个指标：
+
+- utime：表示进程的用户态部分在 Linux 调度中获得 CPU 的 ticks
+- stime：表示进程的内核态部分在 Linux 调度中获得 CPU 的 ticks
+
+> ticks 是 Linux 操作系统中的一个时间单位。在 Linux 中有自己的时钟，它会周期性地产生中断。每次中断都会触发 Linux 内核去做一次进程调度，而这一次中断就是一个 tick。因为是周期性的中断，比如 1 秒钟 100 次中断，那么一个 tick 作为一个时间单位看的话，也就是 1/100 秒。
+
+utime 和 stime 这两个指标都是累计值，表示从进程开始运行到现在，如果需要计算瞬时值的话，就需要分别求出某一时间间隔（如1秒）内的增量。
+
+#### 系统 CPU 使用率
