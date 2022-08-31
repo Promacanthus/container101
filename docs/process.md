@@ -331,7 +331,7 @@ top 工具主要显示了宿主机系统整体的 CPU 使用率，以及单个�
 
 #### 进程 CPU 使用率
 
-对于每个进程，在 proc 文件系统中都会每个进程对应的 [stat 文件（`/proc/[pid]/stat`）](https://man7.org/linux/man-pages/man5/proc.5.html)实时输出了进程的状态信息，比如进程的运行态（Running 还是 Sleeping）、父进程 PID、进程优先级、进程使用的内存等等总共 50 多项。
+对于每个进程，在 proc 文件系统中都会有每个进程对应的 [stat 文件(`/proc/[pid]/stat`)](https://man7.org/linux/man-pages/man5/proc.5.html) 实时输出了进程的状态信息，比如进程的运行态（Running 还是 Sleeping）、父进程 PID、进程优先级、进程使用的内存等等总共 50 多项。
 
 重点关注以下两个指标：
 
@@ -342,4 +342,20 @@ top 工具主要显示了宿主机系统整体的 CPU 使用率，以及单个�
 
 utime 和 stime 这两个指标都是累计值，表示从进程开始运行到现在，如果需要计算瞬时值的话，就需要分别求出某一时间间隔（如1秒）内的增量。
 
+`进程 CPU 使用率 = ((utime2-utime1)+(stime2-stime1))*100.0/(HZ* et * 1)`
+
+- (utime2-utime1)+(stime2-stime1)：表示的是某个时间间隔内进程总的 CPU ticks
+- HZ：表示 1 秒钟里 ticks 的次数，Liunx系统中 1 秒钟 100 次
+- et：表示进程的时间间隔
+- 1： 表示 1 个 CPU
+
+精简一下：`进程的 CPU 使用率 =（进程的 ticks/ 单个 CPU 总 ticks）*100.0`
+
 #### 系统 CPU 使用率
+
+对于整个系统的 CPU 使用率，这个文件就是 `/proc/stat`，在这个文件的 cpu 这行有 10 列数据，而前 8 列数据正好对应 top 输出中"%Cpu(s)"那一行里的 8 项数据，即 `user/system/nice/idle/iowait/irq/softirq/steal` 这 8 项，这里的值也是累积值。要计算每一种 CPU 使用率的百分比，就要获取一个瞬时的 ticks 变化，比如1秒钟，然后只需要把所有在这 1 秒里的 ticks 相加得到一个总值，然后拿某一项的 ticks 值，除以这个总值。
+
+
+#### 单个容器的各项 CPU 使用率
+
+在 Cgroup 对应的控制组目录中，有 `cpuacct.stat` 这个文件里面包含了两个统计值，分别是这个控制组里所有进程的内核态 ticks 和用户态的 ticks，那么可以用计算进程 CPU 使用率的公式，去计算整个容器的 CPU 使用率。
