@@ -355,7 +355,36 @@ utime 和 stime 这两个指标都是累计值，表示从进程开始运行到�
 
 对于整个系统的 CPU 使用率，这个文件就是 `/proc/stat`，在这个文件的 cpu 这行有 10 列数据，而前 8 列数据正好对应 top 输出中"%Cpu(s)"那一行里的 8 项数据，即 `user/system/nice/idle/iowait/irq/softirq/steal` 这 8 项，这里的值也是累积值。要计算每一种 CPU 使用率的百分比，就要获取一个瞬时的 ticks 变化，比如1秒钟，然后只需要把所有在这 1 秒里的 ticks 相加得到一个总值，然后拿某一项的 ticks 值，除以这个总值。
 
-
 #### 单个容器的各项 CPU 使用率
 
 在 Cgroup 对应的控制组目录中，有 `cpuacct.stat` 这个文件里面包含了两个统计值，分别是这个控制组里所有进程的内核态 ticks 和用户态的 ticks，那么可以用计算进程 CPU 使用率的公式，去计算整个容器的 CPU 使用率。
+
+## Load Average
+
+CPU Cgroup 可以限制进程的 CPU 资源使用，但是对容器的资源限制是存在盲点的。无法通过 CPU Cgroup 来控制 Load Average 的平均负载。而没有这个限制，就会影响系统资源的合理调度，很可能导致系统变得很慢。
+
+> 现象：当容器里所有进程的 CPU 使用率都很低，甚至整个宿主机的 CPU 使用率都很低，而机器的 Load Average 里的值却很高，容器里进程运行得也很慢。
+
+Load Average 是**一种 CPU 资源需求的度量**。
+
+> 举个例子，对于一个单个 CPU 的系统，如果在 1 分钟的时间里，处理器上始终有一个进程在运行，同时操作系统的进程可运行队列中始终都有 9 个进程在等待获取 CPU 资源。那么对于这 1 分钟的时间来说，系统的"load average"就是 1+9=10，这个定义对绝大部分的 Unix 系统都适用。
+
+对于 Linux 来说，如果只考虑 CPU 资源，Load Averag 等于**单位时间内正在运行的进程加上可运行队列的进程**，这个定义也是成立的。综上 Load Average 应该是：
+
+1. 不论 CPU 是空闲或满负载，Load Average 都是 Linux 进程调度器中可运行队列（Running Queue）里的一段时间的平均进程数目。
+2. 在 CPU 空闲（可运行队列中的进程数目小于 CPU 个数）时，CPU Usage 直接反映到"load average"上，这种情况下，单位时间进程 CPU Usage 相加的平均值应该就是"load average"的值。
+3. 在 CPU 满负载时，有更多的进程在排队需要 CPU 资源，这时"load average"就不能和 CPU Usage 等同了。
+
+Load Average 如果只是考虑进程运行队列中需要被调度的进程或线程平均数目是不够的，因为对于处于 I/O 资源等待的进程都是处于 TASK_UNINTERRUPTIBLE 状态的，把处于 TASK_UNINTERRUPTIBLE 状态的进程数目也计入了 Load Average 中。**TASK_UNINTERRUPTIBLE 是 Linux 进程状态的一种，是进程为等待某个系统资源而进入了睡眠的状态，并且这种睡眠的状态是不能被信号打断的。**
+
+所以对于 Linux 的 Load Average 来说，除了调度器可运行队列（Running Queue）中的进程数目，还有调度器休眠队列（Sleeping Queue）中 UNINTERRUPTIBLE 的进程（显示为 D state，执行`ps aux | grep " D "`可查看到）数目也会增加 Load Average。
+
+`Load Average= 可运行队列进程平均数 + 休眠队列中不可打断的进程平均数`
+
+### D 状态进程
+
+在 Linux 内核中有数百处调用点，它们会把进程设置为 D 状态，这在 Linux 里是很常见的，主要集中在 `disk I/O` 的访问和信号量（Semaphore）锁的访问上，都是对 Linux 系统里的资源的一种竞争。当进程处于 D 状态时，就说明进程还没获得资源，这会在应用程序的最终性能上体现出来，也就是说用户会发觉应用的性能下降了。
+
+D 状态进程导致了性能下降，但目前 D 状态进程引起的容器中进程性能下降问题，Cgroups 还不能解决，因为 Cgroups 更多的是以进程为单位进行隔离，而 D 状态进程是内核中系统全局资源引入的，所以 Cgroups 影响不了它。这就是虽然用 Cgroups 做了配置，保证了容器的 CPU 资源，容器中的进程还是运行很慢的根本原因。
+
+在生产环境中监控容器的宿主机节点里 D 状态的进程数量，然后对 D 状态进程数目异常的节点进行分析，比如磁盘硬件出现问题引起 D 状态进程数目增加，这时就需要更换硬盘。
