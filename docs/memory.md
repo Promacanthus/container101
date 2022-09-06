@@ -32,6 +32,7 @@ Memory Cgroup 的作用是对一组进程的 Memory 使用做限制。Memory Cgr
 - `memory.oom_control`：当控制组中所有进程内存使用总和达到上限值时，决定会不会触发 OOM Killer，缺省值是会触发 OOM Killer 从而杀掉某个进程，设置为 1 表示不触发，此时进程调用 `malloc()` 会暂停申请内存，进程状态因为等待资源而变成 `TASK_INTERRUPTIBLE` 。
 - `memory.usage_in_bytes`：只读参数，表示当前控制组里所有进程实际使用的内存总和。
 - `memory.stat`：显示当前控制组里各种内存类型的实际开销。
+- `memory.swappiness`：控制整个控制组内匿名内存和 page cache 的回收，取值的范围和工作方式和全局的 swappiness 一样，但是优先级比全局的高，详见 swappiness 部分的表格。
 
 计算公式：`控制组中总的可用页面 X 进程的 oom_score_adj + 进程已经使用的物理内存页面数`，所得值最大的进程，就会被系统选中杀死。
 
@@ -85,3 +86,50 @@ Memory Cgroup 控制组里 RSS 内存和 Page Cache 内存的和，正好是 `me
 > 正是 Page Cache 内存的这种 Cache 的特性，对于那些有频繁磁盘访问容器，往往会看到它的内存使用率一直接近容器内存的限制值（`memory.limit_in_bytes`）。但是这时候，并不需要担心它内存的不够， 在判断一个容器的内存使用状况的时候，可以把 Page Cache 这部分内存使用量忽略，而更多的考虑容器中 RSS 的内存使用量。
 
 在考虑内核的情况下，计算公式：`memory.usage_in_bytes = memory.stat[rss] + memory.stat[cache] + memory.kmem.usage_in_bytes`，`memory.kmem.usage_in_bytes 表示该 memcg 内核内存使用量`。
+
+## Swap
+
+Swap 空间就是一块磁盘空间，当内存写满的时候，可以把内存中不常用的数据暂时写到这个 Swap 空间上。这样一来，内存空间就可以释放出来，用来满足新的内存申请的需求。它的好处是可以**应对一些瞬时突发的内存增大需求**，不至于因为内存一时不够而触发 OOM Killer，导致进程被杀死。
+
+
+
+### 创建指定大小的 Swap 空间
+
+```shell
+#! /bin/bash
+fallocate -l 20G ./swapfile
+dd if=/dev/zero of=./swapfile bs=1024 count=20971520
+chmod 600 ./swapfile
+mkswap ./swapfile
+swapon swapfile
+```
+
+启用 Swap 空间后会导致 Memory Cgroup 对内存的限制失去作用，如果一个容器中的程序发生了内存泄漏（Memory leak），本来 Memory Cgroup 可以及时杀死这个进程，让它不影响整个节点中的其他应用程序。结果现在这个内存泄漏的进程没被杀死，还会不断地读写 Swap 磁盘，反而影响了整个节点的性能。
+
+### swappiness
+
+proc 文件系统下的 (swappiness)[https://www.kernel.org/doc/Documentation/sysctl/vm.txt] 这个参数 (`/proc/sys/vm/swappiness`) **决定系统将会有多频繁地使用交换分区**。一个较高的值会使得内核更频繁地使用交换分区，而一个较低的取值，则代表着内核会尽量避免使用交换分区。swappiness 的取值范围是 0–100，缺省值 60。
+
+> 在有磁盘文件访问时，Linux 会尽量把系统的空闲内存用作 Page Cache 来提高文件的读写性能。在没有打开 Swap 空间的情况下，一旦内存不够，就只能把 Page Cache 释放了，而 RSS 内存是不能释放的。在 RSS 里的内存，大部分都是没有对应磁盘文件的内存，比如用 `malloc()` 申请得到的内存，这种内存也被称为**匿名内存（Anonymous memory）**。当 Swap 空间打开后，可以写入 Swap 空间的，就是这些匿名内存。
+
+所以在开启 Swap 空间，并且内存紧张时，Linux 系统如何决定是先释放 Page Cache，还是先把匿名内存释放并写入到 Swap 空间里。简单分析如下：
+
+1. 优先释放 Page Cache：那么有频繁的文件读写操作时，系统的性能就会下降
+2. 优先将匿名内存释放并写入  Swap：如果释放的匿名内存马上要使用，就需要从 Swap 空间读回内存，这会让 Swap（磁盘）的读写频繁，导致系统性能下降
+
+因此，在释放内存的时候，需要平衡 Page Cache 的释放和匿名内存的释放，而 swappiness，就是用来定义这个平衡的参数。swappiness 的取值范围是 0-100，**它不是一个百分比，更像是一个权重**，用来定义 Page Cache 内存和匿名内存的释放的一个比例。
+
+具体的比例如下：
+
+| swappiness的取值 | 匿名内存与 Page Cache 的比例 |            说明             |
+| :--------------: | :--------------------------: | :-------------------------: |
+|       100        |           100:100            |         等比例释放          |
+|    60（缺省）    |            60:140            |     Page Cache 释放优先     |
+|        0         |            0:200             | 并不会禁止匿名内存写入 Swap |
+
+zone 是 Linux 划分物理内存的一个区域，其中包含 3 个水位线（water mark）用来警示空闲内存的紧张程度，保存在 `/proc/zoneinfo` 文件中。
+
+- 在宿主机级别：当空闲内存少于内存一个 zone 的 "high water mark" 中的值的时候，Linux 还是会把匿名内存写入到 Swap 空间后释放内存，即使 swappiness 的值设置为0。
+- 在 Memory Cgroup 控制组级别：当 `memory.swappiness` = 0 的时候，对匿名页的回收是始终禁止的，也就是始终都不会使用 Swap 空间。这时 Linux 系统不会再去比较 free 内存和 zone 里的 high water mark 的值，再决定一个 Memory Cgroup 中的匿名内存要不要回收了。
+
+通过宿主机的 `swappiness` 和 `memory.swappiness` 这 2 个参数让需要使用 Swap 空间的容器和不需要 Swap 的容器，同时运行在同一个宿主机上。
