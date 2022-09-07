@@ -25,3 +25,19 @@ strace: Process 15959 attached
 restart_syscall(<... resuming interrupted read ...>) = ?
 +++ killed by SIGKILL +++
 ```
+
+## fio
+
+磁盘性能测试工具。
+
+```shell
+# fio -direct=1 -iodepth=64 -rw=read -ioengine=libaio -bs=4k -size=10G -numjobs=1  -name=./fio.test
+# -direct=1 表示采用非 buffered I/O 文件读写方式，避免文件读写过程中内存缓冲对性能的影响
+# -iodepth=64 同时发起 64 个 I/O 请求
+# -ioengine-libaio 表示文件读写采用异步 I/O（Async I/O） 的方式，进程可以发起多个 I/O 请求，并且不用阻塞地等待 I/O 的完成，等 I/O 完成之后，进程会收到通知。
+# -rw=read 表示读文件测试
+# -bs=4k 表示每次读 4KB 大小数块
+# -size=10G 表示总共读 10GB 的数据
+# -numjobs=1 表示只有一个进程/线程在运行
+```
+
