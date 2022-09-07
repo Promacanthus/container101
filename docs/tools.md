@@ -41,3 +41,27 @@ restart_syscall(<... resuming interrupted read ...>) = ?
 # -numjobs=1 表示只有一个进程/线程在运行
 ```
 
+## xfs_quota
+
+目录静态容量大小限制。
+
+```shell
+# check if project quota feature enabled
+cat /proc/mounts | grep prjquota
+
+# make directory
+mkdir -p /tmp/xfs_prjquota
+
+# set project id
+xfs_quota -x -c 'project -s -p /tmp/xfs_prjquota 101' /
+
+# set quota
+xfs_quota -x -c 'limit -p bhard=10m 101' /
+
+# write data
+dd if=/dev/zero of=/tmp/xfs_prjquota/test.file bs=1024 count=20000
+
+# check file size
+ls -l /tmp/xfs_prjquota/test.file
+```
+

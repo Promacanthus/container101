@@ -38,10 +38,37 @@ OverlayFS 的一个 mount 命令牵涉到四类目录，分别是 lower，upper�
 从下往上看：
 
 1. 首先，最下面的 "`lower/(ro)`"，是被 mount 两层目录中底下的这层（lowerdir），这一层的文件是不能被修改的，OverlayFS 是支持多个 lowerdir 的。
-2. 然后，是中间的 "`uppder/(rw)`"，是被 mount 两层目录中上面的这层 （upperdir）。在 OverlayFS 中，如果有文件的创建，修改，删除操作，那么都会在这一层反映出来，它是可读写的。
+2. 然后，是中间的 "`uppder/(rw)`"，是被 mount 两层目录中上面的这层 （upperdir）。在 OverlayFS 中，如果有文件的创建，修改，删除操作会在这一层反映出来，它是可读写的。
 3. 接着，是最上面的 "`merged/`" ，是挂载点（mount point）目录，也是用户看到的目录，用户的实际文件操作在这里进行。
 4. 最后，还有一个 "`work/`"，是一个存放临时文件的目录，OverlayFS 中如果有文件修改，就会在中间过程中临时存放文件到这里。
 
-也就是说，OverlayFS 会 mount 两层目录，分别是 lower 层和 upper 层，这两层目录中的文件都会映射到挂载点上。从挂载点的视角看，upper 层的文件会覆盖 lower 层的文件，比如 "`in_both.txt`" 这个文件，在 lower 层和 upper 层都有，但是挂载点 `merged/` 里看到的只是 upper 层里的 "`in_both.txt`"。
+也就是说，OverlayFS 会 mount 两层目录，分别是 lower 层（容器镜像中的文件，对于容器是只读的）和 upper 层（存放容器对文件系统里的所有改动，是可读写的），这两层目录中的文件都会映射到挂载点上。从挂载点的视角看，upper 层的文件会覆盖 lower 层的文件，比如 "`in_both.txt`" 这个文件，在 lower 层和 upper 层都有，但是挂载点 `merged/` 里看到的只是 upper 层里的 "`in_both.txt`"。
 
-如果我们在 merged/ 目录里做文件操作，具体包括这三种。第一种，新建文件，这个文件会出现在 upper/ 目录中。第二种是删除文件，如果我们删除"in_upper.txt"，那么这个文件会在 upper/ 目录中消失。如果删除"in_lower.txt", 在 lower/ 目录里的"in_lower.txt"文件不会有变化，只是在 upper/ 目录中增加了一个特殊文件来告诉 OverlayFS，"in_lower.txt'这个文件不能出现在 merged/ 里了，这就表示它已经被删除了。还有一种操作是修改文件，类似如果修改"in_lower.txt"，那么就会在 upper/ 目录中新建一个"in_lower.txt"文件，包含更新的内容，而在 lower/ 中的原来的实际文件"in_lower.txt"不会改变。
+如果在挂载点  `merged/` 目录里做文件操作，具体包括新建、删除和修改这三种。
+
+1. 新建文件，这个文件会出现在 `upper/` 目录中。
+2. 删除文件，
+   1. 如果删除 "`in_upper.txt`"，那么这个文件会在 `upper/` 目录中消失。
+   2. 如果删除 "`in_lower.txt`", 在 `lower/` 目录里的 "`in_lower.txt`" 文件不会有变化，只是在 `upper/` 目录中增加了一个特殊文件来告诉 OverlayFS，"`in_lower.txt`'文件不能出现在 `merged/` 目录中，表示它已经被删除。
+3. 修改文件，
+   1. 如果删除 "`in_upper.txt`"，那么这个文件会在 `upper/` 目录中的内容直接更新。
+   2. 如果修改 "`in_lower.txt`"，会在 `upper/` 目录中新建一个 "`in_lower.txt`"文件，包含更新的内容，而在 `lower/` 中的原来的实际文件 "`in_lower.txt`" 不会改变。
+
+从宿主机的角度看，upperdir 就是一个目录，如果容器不断往容器文件系统中写入数据，实际上就是往宿主机的磁盘上写数据，这些数据存在于宿主机的磁盘目录中，就会导致宿主机上的磁盘被写满。这样影响的就不止是容器本身了，而是整个宿主机了。
+
+对于容器来说，如果有大量的写操作是不建议写入容器文件系统的，一般是需要给容器挂载一个 volume，用来满足大量的文件读写。或者给容器的 upperdir 目录做一个容量限制，即对宿主机上文件系统中的一个目录做容量限制。
+
+## XFS Quota
+
+在 Linux 系统里的 XFS 文件系统缺省都有 Quota 的特性，这个特性可以为 Linux 系统里的一个用户（user），一个用户组（group）或者一个项目（project）来限制它们使用文件系统的额度（quota），也就是限制它们可以写入文件系统的文件总量。
+
+1. 要使用 XFS Quota 特性，必须**在文件系统挂载时**加上对应的 Quota 选项，比如配置 Project Quota，那么挂载参数就是 "`pquota`"。
+2. 给一个指定的目录打上一个 Project ID，这个 ID 最终是写到目录对应的 inode 上，这个步骤可以使用 XFS 文件系统自带的工具 `xfs_quota` 来完成。一旦目录打上这个 ID 之后，在这个目录下的新建的文件和目录也都会继承这个 ID。
+3. 再次使用 `xfs_quota` 工具对相应的 Project ID 做 Quota 限制。
+
+inode 是文件系统中用来描述一个文件或者一个目录的元数据，里面包含文件大小，数据块的位置，文件所属用户 / 组，文件读写属性以及其他一些属性
+
+> 对于根目录来说，这个参数必须作为一个内核启动的参数 "`rootflags=pquota`"，这样设置就可以保证根目录在启动挂载的时候，带上 XFS Quota 的特性并且支持 Project 模式。可以从 `/proc/mounts` 信息里查看某个目录是否开启 project quota 特性。
+
+## I/O 隔离
+
