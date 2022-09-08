@@ -70,5 +70,89 @@ inode 是文件系统中用来描述一个文件或者一个目录的元数据�
 
 > 对于根目录来说，这个参数必须作为一个内核启动的参数 "`rootflags=pquota`"，这样设置就可以保证根目录在启动挂载的时候，带上 XFS Quota 的特性并且支持 Project 模式。可以从 `/proc/mounts` 信息里查看某个目录是否开启 project quota 特性。
 
-## I/O 隔离
+## blkio Cgroup
+
+- IOPS（Input/Output Operations Per Second）：每秒钟磁盘读写的次数，数值越大，表示性能越好。
+
+- 吞吐量（Throughput）/ 带宽（Bandwidth）：每秒钟磁盘中数据的读取量，一般以 MB/s 为单位。
+
+IOPS 和吞吐量之间的关系：`吞吐量 = 数据块大小 * IOPS`，在 IOPS 固定的情况下，如果读写的每一个数据块越大，那么吞吐量也越大。
+
+[blkio Cgroup](https://www.kernel.org/doc/Documentation/cgroup-v1/blkio-controller.txt) 虚拟文件系统挂载点一般在 "`/sys/fs/cgroup/blkio/`"。在这个目录下创建子目录作为控制组，再把需要做 I/O 限制的进程 pid 写到控制组的 `cgroup.procs` 参数中就可以了。在 blkio Cgroup 中，有四个最主要的参数，它们可以用来限制磁盘 I/O 性能：
+
+1. `blkio.throttle.read_iops_device` ：磁盘读取 IOPS 限制
+2. `blkio.throttle.read_bps_device` ：磁盘读取吞吐量限制
+3. `blkio.throttle.write_iops_device` ：磁盘写入 IOPS 限制
+4. `blkio.throttle.write_bps_device` ：磁盘写入吞吐量限制
+
+```shell
+# example
+
+# check device id
+ls -l /dev/vdb -l
+brw-rw---- 1 root disk 252, 16 Nov 2 08:02 /dev/vdb
+
+# set write throughput 10M/s
+echo "252:16 10485760" > $CGROUP_CONTAINER_PATH/blkio.throttle.write_bps_device
+
+# set read throughoup 10M/s
+echo "253:0 10485760" > $CGROUP_CONTAINER_PATH/blkio.throttle.read_bps_device
+```
+
+在给每个容器都加了 blkio Cgroup 限制后，
+
+- 如果两个容器运行在 Direct I/O 模式下，同时在一个磁盘上写入文件，那么每个容器的写入磁盘的最大吞吐量，是不会互相干扰的。
+- 如果两个容器运行在 Buffered I/O 模式，blkio Cgroup，根本不能限制磁盘的吞吐量。
+
+## Direct I/O 和 Buffered I/O
+
+Direct I/O 模式，用户进程如果要写磁盘文件，就会通过 `Linux 内核的文件系统层 (filesystem) -> 块设备层 (block layer) -> 磁盘驱动 -> 磁盘硬件`，这样一路下去写入磁盘。
+
+Buffered I/O 模式，用户进程只是把文件数据写到内存中（Page Cache）就返回了，而 Linux 内核自己有线程会把内存中的数据再写入到磁盘中。
+
+ **在 Linux 里，由于考虑到性能问题，绝大多数的应用都会使用 Buffered I/O 模式**。
+
+![linux io pattern](/resources/linux-io.webp)
+
+Direct I/O 可以通过 blkio Cgroup 来限制磁盘 I/O，但是 Buffered I/O 不能被限制。这是由于 Cgroup v1 架构设计的局限性导致的。因为每一个子系统都是独立的，资源的限制只能在子系统中发生。
+
+如下图所示，进程 pid_y，分别属于 memory Cgroup 和 blkio Cgroup。但是在 blkio Cgroup 对进程 pid_y 做磁盘 I/O 做限制的时候，blkio 子系统是不会去关心 pid_y 用了哪些内存，哪些内存是不是属于 Page Cache，而这些 Page Cache 的页面在刷入磁盘的时候，产生的 I/O 也不会被计算到进程 pid_y 上面。
+
+![example](/resources/pid_y_example.webp)
+
+这就导致了 blkio 在 Cgroups v1 里不能限制 Buffered I/O 。
+
+## Cgroup v2
+
+Cgroup v2 虚拟文件挂载点一般在 `/sys/fs/cgroup/unified`。
+
+Buffered I/O 限速的问题，在 Cgroup V2 得到了解决，这也是促使 Linux 开发者重新设计 Cgroup V2 的原因之一。Cgroup v2 相比 Cgroup v1 做的最大的变动就是**一个进程属于一个控制组，而每个控制组可以定义自己需要的多个子系统**。
+
+如下图所示，进程 pid_y 属于控制组 group2，在 group2 里同时打开了 io 和 memory 子系统 （Cgroup V2 里的 io 子系统就等同于 Cgroup v1 里的 blkio 子系统）。那么，Cgroup 对进程 pid_y 的磁盘 I/O 做限制的时候，就可以考虑到进程 pid_y 写入到 Page Cache 内存的页面了，这样 buffered I/O 的磁盘限速就实现了。
+
+![cgroup_v2_example](/resources/cgroup_v2_example.webp)
+
+```shell
+# example
+
+# enable cgroup v2
+kernel="cgroup_no_v1=blkio,memory"
+
+# Create a new control group
+mkdir -p /sys/fs/cgroup/unified/iotest
+
+# enable the io and memory controller subsystem
+echo "+io +memory" > /sys/fs/cgroup/unified/cgroup.subtree_control
+
+# Add current bash pid in iotest control group.
+# Then all child processes of the bash will be in iotest group too,
+# including the fio
+echo $$ >/sys/fs/cgroup/unified/iotest/cgroup.procs
+
+# 256:16 are device major and minor ids, /mnt is on the device.
+echo "252:16 wbps=10485760" > /sys/fs/cgroup/unified/iotest/io.max
+cd /mnt
+#Run the fio in non direct I/O mode
+fio -iodepth=1 -rw=write -ioengine=libaio -bs=4k -size=1G -numjobs=1  -name=./fio.test
+```
 

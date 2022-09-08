@@ -1,6 +1,8 @@
 # 常用工具
 
-## strace
+## 进程
+
+### strace
 
 ```shell
 
@@ -26,7 +28,8 @@ restart_syscall(<... resuming interrupted read ...>) = ?
 +++ killed by SIGKILL +++
 ```
 
-## fio
+## 磁盘
+### fio
 
 磁盘性能测试工具。
 
@@ -41,7 +44,15 @@ restart_syscall(<... resuming interrupted read ...>) = ?
 # -numjobs=1 表示只有一个进程/线程在运行
 ```
 
-## xfs_quota
+### iostat
+
+查看实际的磁盘写入速度。
+
+```shell
+iostat -xz 10
+```
+
+### xfs_quota
 
 目录静态容量大小限制。
 
