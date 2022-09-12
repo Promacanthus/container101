@@ -110,7 +110,7 @@ Direct I/O 模式，用户进程如果要写磁盘文件，就会通过 `Linux �
 
 Buffered I/O 模式，用户进程只是把文件数据写到内存中（Page Cache）就返回了，而 Linux 内核自己有线程会把内存中的数据再写入到磁盘中。
 
- **在 Linux 里，由于考虑到性能问题，绝大多数的应用都会使用 Buffered I/O 模式**。
+ **对于 Linux 的系统调用 `write()` 来说，Buffered I/O  是缺省模式，由于考虑到性能问题，绝大多数的应用都会使用 Buffered I/O 模式**。
 
 ![linux io pattern](/resources/linux-io.webp)
 
@@ -121,6 +121,32 @@ Direct I/O 可以通过 blkio Cgroup 来限制磁盘 I/O，但是 Buffered I/O �
 ![example](/resources/pid_y_example.webp)
 
 这就导致了 blkio 在 Cgroups v1 里不能限制 Buffered I/O 。
+
+### Dirty Pages
+
+当使用 Buffered I/O 的应用程序从虚拟机迁移到容器，由于 Memory Cgroup 的限制，`write()`写相同大小的数据块花费的时间，延迟波动会比较大。对于 Buffered I/O，数据会先写入 Page Cache，这些写入了数据的内存页面在没有被写入磁盘文件之前，被叫做 dirty pages。
+
+Linux 内核有专门的内核线程（每个磁盘设备对应的 kworker / flush 线程）把 dirty pages 写入到磁盘中。在 `/proc/sys/vm` 中定义了与 dirty pages 相关的内核参数。
+
+dirty_pages **阈值**的计算公式：`dirty pages 的内存 / 节点可用内存 * 100%`
+
+| 内核参数                    | 含义                                                         | 默认值      | 描述                             |
+| --------------------------- | ------------------------------------------------------------ | ----------- | -------------------------------- |
+| `dirty_background_ratio`    | 如果阈值超过这个参数设定的值，内核 flush 线程就会把 dirty pages 刷到磁盘中 | 10%         |                                  |
+| `dirty_background_bytes`    | 定义 dirty pages 开始到磁盘的内存临界值                      |             | 与`dirty_background_ratio`二选一 |
+| `dirty_ratio`               | 如果阈值大于这个参数设定的值，正在执行 Buffered I/O 写文件的进程会被阻塞，直到它写的数据页面都写到磁盘为止 | 20%         |                                  |
+| `ditry_bytes`               | 定义正在执行 Buffered I/O 的进程阻塞的内存临界值             |             | 与`dirty_ratio`二选一            |
+| `ditry_writeback_centisecs` | 每五秒钟会唤醒一次内核的 flush 线程来处理 ditry pages        | 500（5s）   | 百分之一秒为单位                 |
+| `ditry_expire_centisecs`    | 定义了 dirty pages 在内存中保留的最长时间，如果超过这里定义的时间，内核的 flush 线程就会把这个页面写入磁盘 | 3000（30s） | 百分之一秒为单位                 |
+
+```shell
+# view the real-time value of dirty pages
+watch -n 1 "cat /proc/vmstat | grep dirty“
+```
+
+> Linux 会把所有的空闲内存利用起来，一旦有 Buffered I/O，这些内存都会被用作 Page Cache。当容器加了 Memory Cgroup 限制了内存之后，对于容器里的 Buffered I/O，就只能使用容器中允许使用的最大内存来做 Page Cache。
+
+**如果容器在做内存限制的时候，Cgroup 中 `memory.limit_in_bytes` 设置得比较小，而容器中的进程又有很大量的 I/O，这样申请新的 Page Cache 内存的时候，又会不断释放老的内存页面，这些操作就会带来额外的系统开销了。**
 
 ## Cgroup v2
 
