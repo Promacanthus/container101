@@ -106,3 +106,17 @@ dd if=/dev/zero of=/tmp/xfs_prjquota/test.file bs=1024 count=20000
 ls -l /tmp/xfs_prjquota/test.file
 ```
 
+## namespace
+
+```shell
+# list network namespace
+lsns -t net
+
+# list all namespace
+lsns
+
+# enter namesapce
+nsenter -t <PID> -n <command>
+nsenter --target $(docker inspect -f {.State.Pid}) --net
+```
+
