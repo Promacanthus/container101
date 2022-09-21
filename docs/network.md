@@ -29,3 +29,36 @@
 1. 在新的进程创建的时候，伴随新进程建立，同时也建立出新的 Network Namespace。通过 `clone()` 系统调用带上 `CLONE_NEWNET` flag 来实现的，如 `clone(new_netns, stack + STACK_SIZE, CLONE_NEWNET | SIGCHLD, NULL)`。`Clone()` 建立出来一个新的进程，这个新的进程所在的 Network Namespace 也是新的。
 2. 调用 `unshare()` 系统调用来直接改变当前进程的 Network Namespace，如 `unshare(CLONE_NEWNET)` 。
 
+## 容器网络接口
+
+如下图所示：
+
+- 容器有自己的 Network Namespace，eth0 是这个 Network Namespace 里的网络接口。
+- 宿主机也有自己的 eth0，这是真正的物理网卡，可以和外面通讯。
+
+![network-interface](/resources/newowrk-namespace-interface.webp)
+
+要让容器 Network Namespace 中的数据包最终发送到物理网卡上，大致应该包括这两步：
+
+1. 让数据包从容器的 Network Namespace 发送到 Host Network Namespace 上。
+2. 数据包发到了 Host Network Namespace 之后，还要解决数据包怎么从宿主机上的 eth0 发送出去的问题。
+
+### 数据包从容器到宿主机
+
+在 [Docker 网络文档](https://docs.docker.com/network/)或者 [Kubernetes 网络文档](https://kubernetes.io/docs/concepts/cluster-administration/networking/)中介绍了很多种容器网络配置的方式。对于容器从自己的 Network Namespace 连接到 Host Network Namespace 的方法，一般来说就只有两类设备接口：
+
+1. [veth](https://man7.org/linux/man-pages/man4/veth.4.html)：是一个虚拟的网络设备，一般都是成对创建，而且这对设备是相互连接的。当每个设备在不同的 Network Namespaces 的时候，Namespace 之间就可以用这对 veth 设备来进行网络通讯。这是使用最多的方式，Docker 启动容器缺省的网络接口，主要通过 [`ip netns`](https://man7.org/linux/man-pages/man8/ip-netns.8.html) 命令对 network namespace 操作。
+2. macvlan/ipvlan
+
+### 数据包从宿主机 eth0 发送出去
+
+这就是一个普通 Linux 节点上数据包转发的问题。这里解决问题的方法有很多种：
+
+1. 用 nat 来做个转发
+2. 建立 Overlay 网络发送
+3. 通过配置 proxy arp 加路由的方法来实现
+
+考虑到网络环境的配置，Docker 缺省使用的是 bridge + nat 的转发方式， 对于其他的配置方法，可以查阅 Docker 或者 Kubernetes 相关的文档。
+
+Docker 程序在节点上安装完之后，就会自动建立了一个 docker0 的 bridge interface。所以 veth_host 这个设备会接入到 docker0 这个 bridge 上，这样容器和 docker0 组成了一个子网，docker0 上的 IP 就是这个子网的网关 IP。要让子网通过宿主机上 eth0 去访问外网，加上 iptables 的规则（`iptables -P FORWARD ACCEPT`）同时配置两个网络设备接口 docker0 和 eth0 之间的数据包转发（`echo 1 > /proc/sys/net/ipv4/ip_forward`）就可以了。
+
