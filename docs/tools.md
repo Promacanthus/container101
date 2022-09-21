@@ -106,7 +106,9 @@ dd if=/dev/zero of=/tmp/xfs_prjquota/test.file bs=1024 count=20000
 ls -l /tmp/xfs_prjquota/test.file
 ```
 
-## namespace
+## 网络
+
+### namespace
 
 ```shell
 # list network namespace
@@ -120,10 +122,12 @@ nsenter -t <PID> -n <command>
 nsenter --target $(docker inspect -f {.State.Pid}) --net
 ```
 
-## ip
+### ip
 
 ```shell
+docker run --init --name lat-test-1 --network none -d registry/latency-test:v1 sleep 36000
 
+# ---Set veth---
 pid=$(ps -ef | grep "sleep 36000" | grep -v grep | awk '{print $2}')
 echo $pid
 # Get network namespace id by pid then link pid and network namesapce id
@@ -145,5 +149,71 @@ ip link set veth_host up
 
 # set veth_host into docker0 bridge
 ip link set veth_host master docker0
+
+# ---Set ipvlan--- 
+pid1=$(docker inspect lat-test-1 | grep -i Pid | head -n 1 | awk '{print $2}' | awk -F "," '{print $1}')
+echo $pid1
+ln -s /proc/$pid1/ns/net /var/run/netns/$pid1
+ 
+ip link add link eth0 ipvt1 type ipvlan mode l2
+ip link set dev ipvt1 netns $pid1
+ 
+ip netns exec $pid1 ip link set ipvt1 name eth0
+ip netns exec $pid1 ip addr add 172.17.3.2/16 dev eth0
+ip netns exec $pid1 ip link set eth0 up
+```
+
+### tcpdump
+
+```shell
+# container eth0
+ip netns exec $pid tcpdump -i eth0 host <target ip addr> -nn
+
+# veth_host
+tcpdump -i veth_host host <target ip addr> -nn
+
+# docker0
+tcpdump -i docker0 host <target ip addr> -nn
+
+# host eth0
+tcpdump -i eth0 host <target ip addr> -nn
+```
+
+### [netperf](https://hewlettpackard.github.io/netperf/)
+
+衡量网络性能的工具，它可以提供单向吞吐量和端到端延迟的测试。
+
+TCP_RR 是 netperf 里专门用来测试网络延时的，缺省每次运行 10 秒钟。运行以后，计算平均每秒钟 TCP request/response 的次数，这个次数越高，就说明延时越小。
+
+```shell
+
+# ./netperf -H 192.168.0.194 -t TCP_RR
+MIGRATED TCP REQUEST/RESPONSE TEST from 0.0.0.0 (0.0.0.0) port 0 AF_INET to 192.168.0.194 () port 0 AF_INET : first burst 0
+Local /Remote
+Socket Size   Request  Resp.   Elapsed  Trans.
+Send   Recv   Size     Size    Time     Rate
+bytes  Bytes  bytes    bytes   secs.    per sec
+ 
+16384  131072 1        1       10.00    2504.92
+16384  131072
+# ./netperf -H 192.168.0.194 -t TCP_RR
+MIGRATED TCP REQUEST/RESPONSE TEST from 0.0.0.0 (0.0.0.0) port 0 AF_INET to 192.168.0.194 () port 0 AF_INET : first burst 0
+Local /Remote
+Socket Size   Request  Resp.   Elapsed  Trans.
+Send   Recv   Size     Size    Time     Rate
+bytes  Bytes  bytes    bytes   secs.    per sec
+ 
+16384  131072 1        1       10.00    2410.14
+16384  131072
+ 
+# ./netperf -H 192.168.0.194 -t TCP_RR
+MIGRATED TCP REQUEST/RESPONSE TEST from 0.0.0.0 (0.0.0.0) port 0 AF_INET to 192.168.0.194 () port 0 AF_INET : first burst 0
+Local /Remote
+Socket Size   Request  Resp.   Elapsed  Trans.
+Send   Recv   Size     Size    Time     Rate
+bytes  Bytes  bytes    bytes   secs.    per sec
+ 
+16384  131072 1        1       10.00    2422.81
+16384  131072
 ```
 

@@ -308,11 +308,12 @@ Cgroups 是对指定进程做计算机资源限制的，CPU Cgroup 是用来限�
 - 完全公平调度程序（CFS） — 一个比例分配调度程序，可根据任务优先级 ∕ 权重或 cgroup 分得的份额，在任务群组（cgroups）间按比例分配 CPU 时间（CPU 带宽）。
 - 实时调度程序（RT） — 一个任务调度程序，可对实时任务使用 CPU 的时间进行限定。一般一些嵌入式实时的程序需要实时调度。
 
+
 |参数|描述|默认值|备注
-|---|---|---|
+|---|---|---|---|
 |cgroup.procs|当前控制组限制的进程号||
-|cpu.cfs_period_us|CFS 算法的调度周期|100000us=100ms|上限1m，下限100us
-|cpu.cfs_quota_us|CFS 算法中一个调度周期里这个控制组被允许的运行时间，这是绝对值| -1 |单位微秒
+|cpu.cfs_period_us|CFS 算法的调度周期|100000us=100ms|上限1m，下限100us|
+|cpu.cfs_quota_us|CFS 算法中一个调度周期里这个控制组被允许的运行时间，这是绝对值| -1 |单位微秒|
 |cpu.shares|控制组之间的 CPU 分配比例，整个节点 CPU 跑满的时候才能发挥作用|1024表示获得1个CPU的比例|
 |cpu.stat|报告 CPU 时间统计|nr_periods — 经过的周期间隔数（cpu.cfs_period_us），nr_throttled — cgroup 中任务被节流的次数（即耗尽所有按配额分得的可用时间后，被禁止运行），throttled_time — cgroup 中任务被节流的时间总计（以纳秒为单位）|
 |cpu.rt_period_us|设定在某个时间段中 ，每隔多久，cgroup 对 CPU 资源的存取就要重新分配|单位为微秒us|只可用于实时调度任务
