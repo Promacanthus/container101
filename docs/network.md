@@ -154,7 +154,7 @@ RSS 的实现在网卡硬件和驱动里面，而 RPS（Receive Packet Steering�
 
 ![receive-packet-steering](/resources/receive-packet-steering.webp)
 
-RSS（工作在网卡的硬件层） 和 RPS（工作在 Linux 内核的软件层） 的目的都是把数据包分散到更多的 CPU 上进行处理，使得系统有更强的网络包处理能力。在把数据包分散到各个 CPU 时，保证了同一个数据流在一个 CPU 上，这样就可以减少包的乱序。
+**RSS（工作在网卡的硬件层）** 和 **RPS（工作在 Linux 内核的软件层）** 的目的都是把数据包分散到更多的 CPU 上进行处理，使得系统有更强的网络包处理能力。在把数据包分散到各个 CPU 时，保证了同一个数据流在一个 CPU 上，这样就可以减少包的乱序。
 
 如果对应的 veth 接口上打开了 RPS 的配置，那么对于同一个数据流，就可以始终选择同一个 CPU 了。
 
@@ -172,3 +172,6 @@ cat /sys/devices/virtual/net/veth57703b6/queues/rx-0/rps_cpus
 fff
 ```
 
+> RPS 的配置会带来额外的系统开销，在某些网络环境中会引起 softirq CPU 使用率的增大。那接口要不要打开 RPS 呢？这个问题需要根据实际情况来做个权衡。**在实际应用的时候，对于物理网络接口，如果已经有了RSS的情况，一般就不需要再打开RPS了。**
+>
+> 同时还要注意，TCP 的乱序包，并不一定都会产生数据包的重传。想要减少网络数据包的重传，还可以考虑协议栈中其他参数的设置，比如 `/proc/sys/net/ipv4/tcp_reordering`。
