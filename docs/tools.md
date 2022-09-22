@@ -237,3 +237,52 @@ Connecting to host 192.168.147.51, port 5201
 iperf Done.
 ```
 
+## 安全
+
+### [capsh](https://man7.org/linux/man-pages/man1/capsh.1.html)
+
+配置 Linux capabilities 的工具。
+
+```shell
+# remove CAP_NET_ADMIN linux capabilities
+sudo /usr/sbin/capsh --keep=1 --user=root   --drop=cap_net_admin  --   -c './iptables -L;sleep 100'
+Chain INPUT (policy ACCEPT)
+target     prot opt source               destination
+ 
+Chain FORWARD (policy ACCEPT)
+target     prot opt source               destination
+ 
+Chain OUTPUT (policy ACCEPT)
+target     prot opt source               destination
+iptables: Permission denied (you must be root).
+
+# get process id
+ps -ef | grep sleep
+root     22603 22275  0 19:44 pts/1    00:00:00 sudo /usr/sbin/capsh --keep=1 --user=root --drop=cap_net_admin -- -c ./iptables -L;sleep 100
+root     22604 22603  0 19:44 pts/1    00:00:00 /bin/bash -c ./iptables -L;sleep 100
+
+# check process linux capabilities
+cat /proc/22604/status | grep Cap
+CapInh:          0000000000000000
+CapPrm:          0000003fffffefff
+CapEff:          0000003fffffefff # Effective capability sets 
+CapBnd:          0000003fffffefff
+CapAmb:          0000000000000000
+```
+
+### getcap
+
+查看文件的 capabilities。
+
+```shell
+getcap $(which ping)
+```
+
+### setcap
+
+给文件设置 capabilities。
+
+```shell
+setcap -r $(which ping)
+```
+
