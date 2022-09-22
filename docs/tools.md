@@ -217,3 +217,23 @@ bytes  Bytes  bytes    bytes   secs.    per sec
 16384  131072
 ```
 
+### iperf3
+
+从 iperf3 的输出 "`Retr`" 列里，可以看到有多少重传的数据包。
+
+```shell
+
+# iperf3 -c 192.168.147.51
+Connecting to host 192.168.147.51, port 5201
+[  5] local 192.168.225.12 port 51700 connected to 192.168.147.51 port 5201
+[ ID] Interval           Transfer     Bitrate                        Retr    Cwnd
+[  5]   0.00-1.00   sec  1001 MBytes  8.40 Gbits/sec  162    192 KBytes
+…
+- - - - - - - - - - - - - - - - - - - - - - - - -
+[ ID] Interval           Transfer     Bitrate         Retr
+[  5]   0.00-10.00  sec  9.85 GBytes  8.46 Gbits/sec  162             sender
+[  5]   0.00-10.04  sec  9.85 GBytes  8.42 Gbits/sec                  receiver
+ 
+iperf Done.
+```
+
