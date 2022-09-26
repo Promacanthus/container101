@@ -30,15 +30,22 @@ restart_syscall(<... resuming interrupted read ...>) = ?
 
 ### pref
 
+对于查找高 CPU 使用率情况下的热点函数，perf 显然是最有力的工具。为了方便查看，通常把 perf record 输出的结果做成一个火焰图。
+
 ```shell
 # record
 pref record -a -g -p <pid>
+
+# record target cpu
+perf record -C 32 -g -- sleep 10
 
 # report
 pref report
 ```
 
 ### ftrace
+
+把 ftrace 的 tracer 设置为 `function_graph`，通过这个办法查看内核函数的调用时间。
 
 ```shell
 
@@ -236,6 +243,18 @@ Connecting to host 192.168.147.51, port 5201
  
 iperf Done.
 ```
+
+### ipvsadm
+
+查看节点上 IPVS 规则的数目。
+
+```shell
+
+# ipvsadm -L -n | wc -l
+79004
+```
+
+
 
 ## 安全
 
