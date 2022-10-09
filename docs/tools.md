@@ -28,20 +28,112 @@ restart_syscall(<... resuming interrupted read ...>) = ?
 +++ killed by SIGKILL +++
 ```
 
-### pref
+### [pref](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/tools/perf)
 
-对于查找高 CPU 使用率情况下的热点函数，perf 显然是最有力的工具。为了方便查看，通常把 perf record 输出的结果做成一个火焰图。
+在每个 Linux 发行版都有这个工具，安装方式：
+
+1. CentOS：`yum install pref`
+2. Ubuntu：`apt install linux-tools-common`
+
+对于定位 CPU Usage 异常，查找高 CPU 使用率情况下的热点函数，`perf` 显然是最有力的工具。在 CPU Usage 增高的节点上找到具体的引起 CPU 增高的函数，然后就可以有针对性地聚焦到那个函数做分析。
+
+通常分为三个步骤：
+
+1. 抓取数据（`pref record`），命令运行结束后会在磁盘的当前目录留下 `perf.data` 文件，记录了所有采样得到的信息。
+2. 数据读取（`pref script` 和 `pref report`），把 `perf.data` 转化成分析脚本，然后用 [FlameGraph](https://github.com/brendangregg/FlameGraph.git) 工具来读取脚本，生成火焰图。
+3. 异常聚焦，看火焰图 X 轴占比比较大的函数。
 
 ```shell
 # record
 pref record -a -g -p <pid>
+## -a 获取所有 CPU Core 上函数运行情况
 
 # record target cpu
 perf record -C 32 -g -- sleep 10
-
-# report
-pref report
+## -C 指定只抓取 CPU32 的执行指令
+## -g 表示 call-graph enable，也就是记录函数调用关系
+## sleep 10 为了让 pref 抓取 10秒钟的数据
 ```
+
+第一次上手使用时，可以先运行一下 `perf list` 命令，会看到列出了大量的 event，**event 是 perf 工作的基础**，主要有两种：
+
+1. 使用硬件的 PMU 里的 event，
+2. 在内核代码中注册的 event。
+
+```shell
+ # perf list
+…
+  branch-instructions OR branches                    [Hardware event]
+  branch-misses                                      [Hardware event]
+ 
+  alignment-faults                                   [Software event]
+  bpf-output                                         [Software event]
+…
+ 
+  block:block_bio_bounce                             [Tracepoint event]
+  block:block_bio_complete                           [Tracepoint event]
+```
+
+**Hardware event** 来自处理器中的一个 PMU（Performance Monitoring Unit），这些 event 数目不多，都是底层处理器相关的行为，perf 中会命名几个通用的事件，比如 `cpu-cycles`，执行完成的 instructions，Cache 相关的 `cache-misses`。运行一下 `perf stat` ，可以看到在这段时间里这些 Hardware event 发生的数目。
+
+```shell
+# perf stat
+ Performance counter stats for 'system wide':
+ 
+          58667.77 msec cpu-clock                 #   63.203 CPUs utilized
+            258666      context-switches          #    0.004 M/sec
+              2554      cpu-migrations            #    0.044 K/sec
+             30763      page-faults               #    0.524 K/sec
+       21275365299      cycles                    #    0.363 GHz
+       24827718023      instructions              #    1.17  insn per cycle
+        5402114113      branches                  #   92.080 M/sec
+          59862316      branch-misses             #    1.11% of all branches
+ 
+       0.928237838 seconds time elapsed
+```
+
+**Software event** 是定义在 Linux 内核代码中的几个特定的事件，比较典型的有进程上下文切换（内核态到用户态的转换）事件 `context-switches`、发生缺页中断的事件 `page-faults` 等。
+
+**Tracepoints event** 在 perf list 中数量众多，因为内核中很多关键函数里都有 Tracepoints。它的实现方式和 Software event 类似，都是在内核函数中注册了 event。这些 Tracepoints 不仅是用在 perf 中，它已经是 Linux 内核 tracing 的标准接口了，ftrace，ebpf 等工具都会用到它。
+
+pref 使用这些 event 的方式有两种，计数和采样。
+
+1. 计数，统计某个 event 在一段时间里发生了多少次（`pref stats`）
+2. 采样，按照一定规则抽样（`pref record` **在不加 -e 指定 event 的时候，缺省的 event 是 Hardware event cycles**）
+
+```shell
+# perf stat -e page-faults -- sleep 1
+## -e 指定要查看的 event 
+ 
+ Performance counter stats for 'sleep 1':
+ 
+                49      page-faults
+ 
+       1.001583032 seconds time elapsed
+ 
+       0.001556000 seconds user
+       0.000000000 seconds sys
+```
+
+Perf 对 event 的采样有两种模式：
+
+1. 按照 event 的数目（period），比如每发生 10000 次 cycles event 就记录一次 IP、进程等信息，`-c` 参数可以指定每发生多少次，就做一次记录。
+2. 定义一个频率（frequency）， `-F` 参数就是指定频率的。
+
+```shell
+# perf record  -e cycles -c 10000 -- sleep 1
+[ perf record: Woken up 1 times to write data ]
+[ perf record: Captured and wrote 0.024 MB perf.data (191 samples) ]
+
+# perf record -e cycles -F 99 -- sleep 1
+## 指采样每秒钟做 99 次。
+```
+
+容器中使用 pref 的注意事项：
+
+1. perf 是和 Linux kernel 一起发布的，版本最好是和 Linux kernel 一样，不然可能无法正常工作
+2. 系统调用权限问题，`perf` 通过系统调用 `perf_event_open()` 来完成对 event 的计数或者采样。Docker 使用 [seccomp](https://man7.org/linux/man-pages/man2/seccomp.2.html) 默认禁止这个系统调用，可以在启动容器的命令里，加上参数"`--security-opt seccomp=unconfined`" 来解决。
+3. 需要允许容器在没有 `SYS_ADMIN` 这个 capability 的情况下，也可以让 perf 访问 event。在宿主机上设置 `echo -1 > /proc/sys/kernel/perf_event_paranoid`，这样普通的容器里也能执行 perf 。
 
 ### ftrace
 
@@ -249,7 +341,6 @@ iperf Done.
 查看节点上 IPVS 规则的数目。
 
 ```shell
-
 # ipvsadm -L -n | wc -l
 79004
 ```
