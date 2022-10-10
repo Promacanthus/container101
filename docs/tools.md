@@ -53,6 +53,12 @@ perf record -C 32 -g -- sleep 10
 ## -C 指定只抓取 CPU32 的执行指令
 ## -g 表示 call-graph enable，也就是记录函数调用关系
 ## sleep 10 为了让 pref 抓取 10秒钟的数据
+
+# perf record -a -g -- sleep 60
+# perf script > out.perf
+# git clone --depth 1 https://github.com/brendangregg/FlameGraph.git
+# FlameGraph/stackcollapse-perf.pl out.perf > out.folded
+# FlameGraph/flamegraph.pl out.folded > out.sv
 ```
 
 第一次上手使用时，可以先运行一下 `perf list` 命令，会看到列出了大量的 event，**event 是 perf 工作的基础**，主要有两种：
@@ -129,32 +135,148 @@ Perf 对 event 的采样有两种模式：
 ## 指采样每秒钟做 99 次。
 ```
 
-容器中使用 pref 的注意事项：
+最理想的情况是直接在宿主机上运行 pref 命令，容器中使用 pref 的注意事项：
 
-1. perf 是和 Linux kernel 一起发布的，版本最好是和 Linux kernel 一样，不然可能无法正常工作
+1. perf 是和 Linux kernel 一起发布的，版本最好是和 Linux kernel 一样，不然可能无法正常工作，可以直接从源代码编译出静态链接的 `perf`。
 2. 系统调用权限问题，`perf` 通过系统调用 `perf_event_open()` 来完成对 event 的计数或者采样。Docker 使用 [seccomp](https://man7.org/linux/man-pages/man2/seccomp.2.html) 默认禁止这个系统调用，可以在启动容器的命令里，加上参数"`--security-opt seccomp=unconfined`" 来解决。
 3. 需要允许容器在没有 `SYS_ADMIN` 这个 capability 的情况下，也可以让 perf 访问 event。在宿主机上设置 `echo -1 > /proc/sys/kernel/perf_event_paranoid`，这样普通的容器里也能执行 perf 。
 
 ### ftrace
 
-把 ftrace 的 tracer 设置为 `function_graph`，通过这个办法查看内核函数的调用时间。
+ftrace（function tracer）的操作都可以在 tracefs 这个虚拟文件系统中完成，对于 CentOS，这个 tracefs 的挂载点在 `/sys/kernel/debug/tracing`。
+
+```shell
+# cat /proc/mounts | grep tracefs
+tracefs /sys/kernel/debug/tracing tracefs rw,relatime 0 0
+
+
+# ls /sys/kernel/debug/tracing
+available_events            dyn_ftrace_total_info     kprobe_events    saved_cmdlines_size  set_graph_notrace   trace_clock          tracing_on
+available_filter_functions  enabled_functions         kprobe_profile   saved_tgids          snapshot            trace_marker         tracing_thresh
+available_tracers           error_log                 max_graph_depth  set_event            stack_max_size      trace_marker_raw     uprobe_events
+buffer_percent              events                    options          set_event_pid        stack_trace         trace_options        uprobe_profile
+buffer_size_kb              free_buffer               per_cpu          set_ftrace_filter    stack_trace_filter  trace_pipe
+buffer_total_size_kb        function_profile_enabled  printk_formats   set_ftrace_notrace   synthetic_events    trace_stat
+current_tracer              hwlat_detector            README           set_ftrace_pid       timestamp_mode      tracing_cpumask
+dynamic_events              instances                 saved_cmdlines   set_graph_function   trace               tracing_max_latency
+```
+
+通过 `cat trace` 命令可以查看 ftrace 的输出结果，每一行的输出就是当前内核中被调用到的内核函数。在**缺省**状态下 ftrace 的 tracer 是 `nop`，也就是什么都不做。通过向挂载点内的文件执行`echo` 命令，来向内核的 ftrace 系统发送命令，通过 `cat` 文件的方式查看 ftrace 的设置结果。
+
+```shell
+# cat current_tracer
+nop
+
+# cat available_tracers
+hwlat blk mmiotrace function_graph wakeup_dl wakeup_rt wakeup function nop
+
+# echo function > current_tracer
+# echo nop > current_tracer ### 暂时把 current_tracer 设置为 nop, 这样可以清空 trace
+# cat current_tracer
+function
+```
+
+利用 ftrace 里的 filter 参数做筛选：
+
+1. 通过 `set_ftrace_filter` 只列出想看到的内核函数，
+2. 通过 `set_ftrace_pid` 只列出想看到的进程。
+
+如果想要看更加完整的函数调用栈，可以打开 ftrace 中的 `func_stack_trace` 选项。
+
+```shell
+# echo do_mount > set_ftrace_filter
+# echo '!do_mount ' >> set_ftrace_filter ### 把 do_mount filter 给去掉
+
+# mount -t tmpfs tmpfs /tmp/fs
+
+# cat trace
+# tracer: function
+#
+# entries-in-buffer/entries-written: 3/3   #P:12
+#
+#                              _-----=> irqs-off
+#                             / _----=> need-resched
+#                            | / _---=> hardirq/softirq
+#                            || / _--=> preempt-depth
+#                            ||| /     delay
+#           TASK-PID   CPU#  ||||    TIMESTAMP  FUNCTION
+#              | |       |   ||||       |         |
+           mount-20889 [005] .... 2159455.499195: do_mount <-ksys_mount
+           mount-21048 [000] .... 2162013.660835: do_mount <-ksys_mount
+           mount-21048 [000] .... 2162013.660841: <stack trace>
+ => do_mount
+ => ksys_mount
+ => __x64_sys_mount
+ => do_syscall_64
+ => entry_SYSCALL_64_after_hwframe
+```
+
+通过 function tracer 可以帮我们判断内核中函数是否被调用到，以及函数被调用的整个路径 也就是调用栈。
+
+> 如果通过 `perf` 发现了一个内核函数的调用频率比较高，就可以通过 `ftrace` 工具继续深入，这样就能大概知道这个函数是在什么情况下被调用到的。
+
+如果还想知道，某个函数在内核中大致花费了多少时间，把 ftrace 的 tracer 设置为 `function_graph`，通过这个办法查看内核函数的调用时间。
+
+```shell
+# echo function_graph > current_tracer
+# echo 1 > tracing_on
+
+# umount /tmp/fs
+# mount -t tmpfs tmpfs /tmp/fs
+# cat trace
+# tracer: function_graph
+#
+# CPU  DURATION                  FUNCTION CALLS
+# |     |   |                     |   |   |   |
+  0) ! 175.411 us  |  do_mount();
+```
+
+通过 `function_graph` tracer，还可以看到每个函数里所有子函数的调用以及时间，这对理解和分析内核行为都是很有帮助的。
 
 ```shell
 
-# cd /sys/kernel/debug/tracing
-# echo vfs_write >> set_ftrace_filter
-# echo xfs_file_write_iter >> set_ftrace_filter
-# echo xfs_file_buffered_aio_write >> set_ftrace_filter
-# echo iomap_file_buffered_write
-# echo iomap_file_buffered_write >> set_ftrace_filter
-# echo pagecache_get_page >> set_ftrace_filter
-# echo try_to_free_mem_cgroup_pages >> set_ftrace_filter
-# echo try_charge >> set_ftrace_filter
-# echo mem_cgroup_try_charge >> set_ftrace_filter
-
-# echo function_graph > current_tracer
-# echo 1 > tracing_on
+# cat trace | more
+# tracer: function_graph
+#
+# CPU  DURATION                  FUNCTION CALLS
+# |     |   |                     |   |   |   |
+  0)               |  kfree_skb() {
+  0)               |    skb_release_all() {
+  0)               |      skb_release_head_state() {
+  0)               |        nf_conntrack_destroy() {
+  0)               |          destroy_conntrack [nf_conntrack]() {
+  0)   0.205 us    |            nf_ct_remove_expectations [nf_conntrack]();
+  0)               |            nf_ct_del_from_dying_or_unconfirmed_list [nf_conntrack]() {
+  0)   0.282 us    |              _raw_spin_lock();
+  0)   0.679 us    |            }
+  0)   0.193 us    |            __local_bh_enable_ip();
+  0)               |            nf_conntrack_free [nf_conntrack]() {
+  0)               |              nf_ct_ext_destroy [nf_conntrack]() {
+  0)   0.177 us    |                nf_nat_cleanup_conntrack [nf_nat]();
+  0)   1.377 us    |              }
+  0)               |              kfree_call_rcu() {
+  0)               |                __call_rcu() {
+  0)   0.383 us    |                  rcu_segcblist_enqueue();
+  0)   1.111 us    |                }
+  0)   1.535 us    |              }
+  0)   0.446 us    |              kmem_cache_free();
+  0)   4.294 us    |            }
+  0)   6.922 us    |          }
+  0)   7.665 us    |        }
+  0)   8.105 us    |      }
+  0)               |      skb_release_data() {
+  0)               |        skb_free_head() {
+  0)   0.470 us    |          page_frag_free();
+  0)   0.922 us    |        }
+  0)   1.355 us    |      }
+  0) + 10.192 us   |    }
+  0)               |    kfree_skbmem() {
+  0)   0.669 us    |      kmem_cache_free();
+  0)   1.046 us    |    }
+  0) + 13.707 us   |  }
 ```
+
+
 
 ## 磁盘
 
