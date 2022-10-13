@@ -143,6 +143,8 @@ Perf 对 event 的采样有两种模式：
 
 ### ftrace
 
+![function-tracer](/resources/function-tracer.webp)
+
 ftrace（function tracer）的操作都可以在 tracefs 这个虚拟文件系统中完成，对于 CentOS，这个 tracefs 的挂载点在 `/sys/kernel/debug/tracing`。
 
 ```shell
