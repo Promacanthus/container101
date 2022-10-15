@@ -65,6 +65,10 @@ eth0@if169: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP gr
 
 [官方文档](https://man7.org/linux/man-pages/man7/cgroups.7.html)
 
+Cgroup 是一个 Linux 内核特性，对一组进程的资源使用（CPU、内存、磁盘 I/O 和网络等）进行限制、审计和隔离。
+
+Cgroups(Control Groups) 是 linux 内核提供的一种机制，这种机制可以根据需求把一系列系统任务及其子任务整合 (或分隔) 到按资源划分等级的不同组内，从而为系统资源管理提供一个统一的框架。简单说，cgroups 可以限制、记录任务组所使用的物理资源。本质上来说，cgroups 是内核附加在程序上的一系列钩子 (hook)，通过程序运行时对资源的调度触发相应的钩子以达到资源追踪和限制的目的。
+
 > 将容器看作是一台“计算机”，那么这台“计算机”有多少 CPU，有多少 Memory 呢？Linux 如何为这些“计算机”来定义 CPU，定义 Memory 的容量呢？想要定义“计算机”各种容量大小，就涉及到支撑容器的第二个技术 Cgroups （Control Groups），它可以对指定的进程或进程组做各种计算机资源的**限制**，比如限制 CPU 的使用率，内存使用量，IO 设备的流量等等。
 
 Cgroups 通过不同的子系统限制了不同的资源，每个子系统限制一种资源。每个子系统限制资源的方式都是类似的，就是把相关的一组进程分配到一个控制组里，然后通过树结构进行管理，每个控制组都设有自己的资源控制参数。
@@ -75,6 +79,25 @@ Cgroups 通过不同的子系统限制了不同的资源，每个子系统限制
 - memory 子系统，限制一个控制组最大的内存使用量。
 - pids 子系统，限制一个控制组里最多可以运行多少个进程。
 - cpuset 子系统，限制一个控制组里的进程可以在哪几个**物理 CPU** 上运行。
+
+### Cgroup 和 systemd
+
+docker 默认的 Cgroup Driver 是 cgroupfs：
+
+```shell
+$ docker info | grep cgroup
+ Cgroup Driver: cgroupfs
+```
+
+cgroup 提供了一个原生接口并通过 `cgroupfs` 提供（cgroupfs 就是 Cgroup 的一个接口的封装），类似于 procfs 和 sysfs，是一种虚拟文件系统。并且 cgroupfs 是可以挂载的，默认情况下挂载在 `/sys/fs/cgroup` 目录。
+
+`systemd` 也是对于 cgroup 接口的一个封装。systemd 以 PID1 的形式在系统启动的时候运行，并提供了一套系统管理守护程序、库和实用程序，用来控制、管理 Linux 计算机操作系统资源。
+
+> 当某个 Linux 系统发行版使用 **systemd** 作为其初始化系统时，初始化进程会生成并使用一个 root 控制组（`cgroup`），并充当 cgroup 管理器。Systemd 与 cgroup 集成紧密，并将为每个 systemd 单元分配一个 cgroup。也可以配置容器运行时和 kubelet 使用 `cgroupfs`。连同 systemd 一起使用 `cgroupfs` 意味着将有两个不同的 cgroup 管理器。
+>
+> 单个 cgroup 管理器将简化分配资源的视图，并且默认情况下将对可用资源和使用中的资源具有更一致的视图。 当有两个管理器共存于一个系统中时，最终将对这些资源产生两种视图。在此领域人们已经报告过一些案例，某些节点配置让 kubelet 和  docker 使用 `cgroupfs`，而节点上运行的其余进程则使用 systemd; 这类节点在资源压力下会变得不稳定。
+
+**注意事项：**不要尝试修改集群里面某个节点的 cgroup 驱动，如果有需要，最好移除该节点重新加入。
 
 ### v1 & v2
 
