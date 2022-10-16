@@ -12,18 +12,23 @@
 
 [官方文档](https://man7.org/linux/man-pages/man7/namespaces.7.html)
 
-Linux 中所有的 Namespace。
+Linux 中所有的 Namespace，常用的 Namespace API，主要是和进程相关的系统调用函数。
 
-|Namespace|Flag|Page|Isolates|description
+- `clone()`：用于创建新进程，通过传入一个或多个系统调用参数（ flags 参数）可以创建出不同类型的 NameSpace ，并且子进程也将会成为这些 NameSpace 的成员。
+- `setns(int fd, int nstype)`： 用于将进程加入到一个现有的 Namespace 中。其中 fd 为文件描述符，引用 `/proc/[pid]/ns/` 目录里对应的文件，nstype 代表 NameSpace 类型。
+- `unshare(int flags)`：用于将进程移出原本的 NameSpace ，并加入到新创建的 NameSpace 中。同样是通过传入一个或多个系统调用参数（ flags 参数）来创建新的 NameSpace 。
+- `ioctl()`：用于发现有关 NameSpace 的信息。
+
+|Namespace|Flag|Page|Isolates|description|
 |---|---|---|---|---|
-|Cgroup|CLONE_NEWCGROUP|cgroup_namespaces|Cgroup root directory|
-|IPC|CLONE_NEWIPC|ipc_namespaces|System V IPC, POSIX message queues|
-|Network|CLONE_NEWNET|network_namespaces|Network devices, stacks, ports, etc.|负责管理网络环境的隔离
-|Mount|CLONE_NEWNS|mount_namespaces|Mount points|管理文件系统的隔离
-|PID|CLONE_NEWPID|pid_namespaces|Process IDs|负责隔离不同容器的进程
-|Time|CLONE_NEWTIME|time_namespaces|Boot and monotonic clocks|
-|User|CLONE_NEWUSER|user_namespaces|User and group IDs|
-|UTS|CLONE_NEWUTS|uts_namespaces|Hostname and NIS domain name|
+|Control Group(Cgroup) Namespace|CLONE_NEWCGROUP|cgroup_namespaces|Cgroup root directory|Cgroup 信息隔离。用于隐藏进程所属的控制组的身份，使命名空间中的 cgroup 视图始终以根形式来呈现，保障安全|
+|Interprocess Communication<br />(IPC)|CLONE_NEWIPC|ipc_namespaces|System V IPC, POSIX message queues|进程 IPC 通信隔离，让只有相同 IPC 命名空间的进程之间才可以共享内存、信号量、消息队列通信|
+|Network<br />(net)|CLONE_NEWNET|network_namespaces|Network devices, stacks, ports, etc.|负责管理网络环境的隔离，使每个 net 命名空间有独立的网络设备，IP 地址，路由表，`/proc/net` 目录等网络资源|
+|Mount<br />(mnt)|CLONE_NEWNS|mount_namespaces|Mount points|管理文件系统的隔离，隔离各个进程看到的挂载点视图|
+|Process ID<br />(pid)|CLONE_NEWPID|pid_namespaces|Process IDs|负责隔离不同容器的进程，使每个命名空间都有自己的初始化进程，PID 为 1，作为所有进程的父进程|
+|Time Namepsace|CLONE_NEWTIME|time_namespaces|Boot and monotonic clocks|系统时间隔离。允许不同进程查看到不同的系统时间|
+|User ID<br />(user)|CLONE_NEWUSER|user_namespaces|User and group IDs|用户 UID 和组 GID 隔离。例如每个命名空间都可以有自己的 root 用户|
+|UTS|CLONE_NEWUTS|uts_namespaces|Hostname and NIS domain name|主机名或域名隔离。使其在网络上可以被视作一个独立的节点而非主机上的一个进程|
 
 **Namespace 是 Linux 中实现容器的两大技术之一，它最重要的作用是保证资源的隔离。主要目的是隔离运行在同一个宿主机上的容器，让这些容器之间不能访问彼此的资源**。这种隔离有两个作用：
 
@@ -65,20 +70,28 @@ eth0@if169: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UP gr
 
 [官方文档](https://man7.org/linux/man-pages/man7/cgroups.7.html)
 
-Cgroup 是一个 Linux 内核特性，对一组进程的资源使用（CPU、内存、磁盘 I/O 和网络等）进行限制、审计和隔离。
-
-Cgroups(Control Groups) 是 linux 内核提供的一种机制，这种机制可以根据需求把一系列系统任务及其子任务整合 (或分隔) 到按资源划分等级的不同组内，从而为系统资源管理提供一个统一的框架。简单说，cgroups 可以限制、记录任务组所使用的物理资源。本质上来说，cgroups 是内核附加在程序上的一系列钩子 (hook)，通过程序运行时对资源的调度触发相应的钩子以达到资源追踪和限制的目的。
+Cgroup 是一个 Linux 内核特性，对一组进程的资源使用（CPU、内存、磁盘 I/O 和网络等）进行限制、审计和隔离。Linux 内核提供的这种 Cgroups 的机制可以根据需求把一系列系统任务及其子任务整合 (或分隔) 到按资源划分等级的不同组内，从而为系统资源管理提供一个统一的框架。简单说，cgroups 可以限制、记录任务组所使用的物理资源。本质上来说，cgroups 是内核附加在程序上的一系列钩子 (hook)，通过程序运行时对资源的调度触发相应的钩子以达到资源追踪和限制的目的。
 
 > 将容器看作是一台“计算机”，那么这台“计算机”有多少 CPU，有多少 Memory 呢？Linux 如何为这些“计算机”来定义 CPU，定义 Memory 的容量呢？想要定义“计算机”各种容量大小，就涉及到支撑容器的第二个技术 Cgroups （Control Groups），它可以对指定的进程或进程组做各种计算机资源的**限制**，比如限制 CPU 的使用率，内存使用量，IO 设备的流量等等。
 
 Cgroups 通过不同的子系统限制了不同的资源，每个子系统限制一种资源。每个子系统限制资源的方式都是类似的，就是把相关的一组进程分配到一个控制组里，然后通过树结构进行管理，每个控制组都设有自己的资源控制参数。
 
+在 Linux Kernel 中，为了让 Cgroups 的配置更直观，使用了目录的层级关系来模拟 hierarchy ，以此通过虚拟的树状文件系统的方式暴露给用户调用。系统已经默认为每个 subsystem 创建了一个默认的 hierarchy ，我们可以直接使用。
+
 几种比较常用的 Cgroups 子系统：
 
-- CPU 子系统，限制一个控制组（一组进程，可以理解为一个容器里所有的进程）可使用的最大 CPU。
-- memory 子系统，限制一个控制组最大的内存使用量。
-- pids 子系统，限制一个控制组里最多可以运行多少个进程。
-- cpuset 子系统，限制一个控制组里的进程可以在哪几个**物理 CPU** 上运行。
+| 子系统   | 作用                                                         | 目录                    |
+| -------- | ------------------------------------------------------------ | ----------------------- |
+| cpu      | 限制一个控制组（一组进程，可以理解为一个容器里所有的进程）可使用的最大 CPU |                         |
+| cpuacct  | 统计一个控制组的 CPU 使用情况                                |                         |
+| cpuset   | 在多核机器上为一个控制组分配单独的 CPU 节点或者内存节点（仅限 NUMA 架构） |                         |
+| memory   | 限制一个控制组最大的内存使用量                               | `/sys/fs/cgroup/memory` |
+| blkio    | 限制一个控制组对块设备（例如硬盘） io 的访问                 |                         |
+| devices  | 限制一个控制组对设备的访问                                   |                         |
+| net_cls  | 标记进程的网络数据包，以便可以使用 tc 模块（traffic control）对数据包进行限流、监控等控制 |                         |
+| net_prio | 限制一个控制组产生的网络流量的优先级                         |                         |
+| freezer  | 挂起或者恢复进程                                             |                         |
+| pids     | 限制一个控制组里最多可以运行多少个进程                       |                         |
 
 ### Cgroup 和 systemd
 
@@ -111,7 +124,7 @@ Cgroups v2 解决了 v1 的问题，使各个子系统可以协调统一地管�
 
 Cgroups v2 在生产环境的应用还很少，因为该版本很多子系统的实现需要较新版本的 Linux 内核，还有无论是主流的 Linux 发行版本还是容器云平台，对 v2 的支持也刚刚起步。
 
-### Memory 子系统
+### [Memory 子系统](https://www.kernel.org/doc/Documentation/cgroup-v1/memory.txt)
 
 memory 子系统的限制参数最简单，对于启动的每个容器，都会在 Cgroups 子系统下建立一个目录，在 Cgroups 中这个目录也被称作控制组，比如下图里的"`docker-<id1>`"和"`docker-<id2>`"等，设置这个控制组的参数，来限制这个容器的内存资源。
 
@@ -119,5 +132,21 @@ memory 子系统的限制参数最简单，对于启动的每个容器，都会�
 
 > 对于创建的容器，在每个 Cgroups 子系统下，对应这个容器就会有一个目录 `docker-c5a9ff78d9c1……`。
 
-- `cgroup.procs`：保存这个控制组中所有的进程的编号
-- `memory.limit_in_bytes`：设置控制组中所有进程内存使用率的总和
+在内存子系统中创建文件夹，文件夹内的所有文件都是系统自动创建的。常用的几个文件功能如下：
+
+| 文件名                          | 功能                                                         |
+| ------------------------------- | ------------------------------------------------------------ |
+| tasks                           | cgroup 中运行的进程（ PID）列表。将 PID 写入一个 cgroup 的 tasks 文件，可将此进程移至该 cgroup |
+| cgroup.procs                    | cgroup 中运行的线程群组列表（ TGID ）。将 TGID 写入 cgroup 的 cgroup.procs 文件，可将此线程组群移至该 cgroup |
+| cgroup.event_control            | event_fd() 的接口。允许 cgroup 的变更状态通知被发送          |
+| notify_on_release               | 用于自动移除空 cgroup 。默认为禁用状态（0）。设定为启用状态（1）时，当 cgroup 不再包含任何任务时（即，cgroup 的 `tasks` 文件包含 PID，而 PID 被移除，致使文件变空），kernel 会执行 `release_agent` 文件（仅在 root cgroup 出现）的内容，并且提供通向被清空 cgroup 的相关路径（与 root cgroup 相关）作为参数 |
+| memory.usage_in_bytes           | 显示 cgroup 中进程当前所用的内存总量（以字节为单位）         |
+| memory.memsw.usage_in_bytes     | 显示 cgroup 中进程当前所用的内存量和 swap 空间总和（以字节为单位） |
+| memory.max_usage_in_bytes       | 显示 cgroup 中进程所用的最大内存量（以字节为单位）           |
+| memory.memsw.max_usage_in_bytes | 显示 cgroup 中进程的最大内存用量和最大 swap 空间用量（以字节为单位） |
+| memory.limit_in_bytes           | 设定用户内存（包括文件缓存）的最大用量                       |
+| memory.memsw.limit_in_bytes     | 设定内存与 swap 用量之和的最大值                             |
+| memory.failcnt                  | 显示内存达到 `memory.limit_in_bytes` 设定的限制值的次数      |
+| memory.memsw.failcnt            | 显示内存和 swap 空间总和达到 `memory.memsw.limit_in_bytes` 设定的限制值的次数 |
+| memory.oom_control              | 可以为 cgroup 启用或者禁用“内存不足”（Out of Memory，OOM） 终止程序。默认为启用状态（0），尝试消耗超过其允许内存的任务会被 OOM 终止程序立即终止。设定为禁用状态（1）时，尝试使用超过其允许内存的任务会被暂停，直到有额外内存可用。 |
+

@@ -6,11 +6,27 @@
 
 **为了有效地减少磁盘上冗余的镜像数据，同时减少冗余的镜像数据在网络上的传输，需要一种针对于容器的文件系统，这类文件系统称为 UnionFS**。
 
-UnionFS 这类文件系统实现的主要功能是把多个目录（处于不同的分区）一起挂载（mount）在一个目录下。这种多目录挂载的方式，正好可以解决容器镜像的问题。
+UnionFS 这类文件系统实现的主要功能是把多个目录（处于不同的分区）一起挂载（mount）在一个目录下，并且对文件系统的修改是类似于 git 的 commit 一样 **作为一次提交来一层层的叠加的** 。
+
+这种多目录挂载的方式，正好可以解决容器镜像的问题，利用其 **分层的特性** 来进行镜像的继承，基于基础镜像，制作出各种具体的应用镜像，不同容器就可以直接 **共享基础的文件系统层** ，同时再加上自己独有的改动层，大大提高了存储的效率。
+
+### UnionFS
+
+目前 Docker 支持的 UnionFS 有以下几种类型：
+
+| 联合文件系统  | 存储驱动       | 说明                                                         |
+| :------------ | :------------- | :----------------------------------------------------------- |
+| OverlayFS     | overlay2       | 当前所有受支持的 Linux 发行版的 **首选** 存储驱动程序，并且不需要任何额外的配置 |
+| OverlayFS     | fuse-overlayfs | 仅在不提供对 rootless 支持的主机上运行 Rootless Docker 时才首选 |
+| Btrfs 和 ZFS  | btrfs 和 zfs   | 允许使用高级选项，例如创建快照，但需要更多的维护和设置       |
+| VFS           | vfs            | 旨在用于测试目的，以及无法使用写时复制文件系统的情况下使用。此存储驱动程序性能较差，一般不建议用于生产用途 |
+| AUFS          | aufs           | Docker 18.06 和更早版本的首选存储驱动程序。但是在没有 overlay2 驱动的机器上仍然会使用 aufs 作为 Docker 的默认驱动 |
+| Device Mapper | devicemapper   | RHEL （旧内核版本不支持 overlay2，最新版本已支持）的 Docker Engine 的默认存储驱动，有两种配置模式：loop-lvm（零配置但性能差） 和 direct-lvm（生产环境推荐） |
+| OverlayFS     | overlay        | 推荐使用 overlay2 存储驱动                                   |
 
 ## Overlay
 
-UnionFS 类似的有很多种实现，包括在 Docker 里最早使用的 AUFS，在 Linux 内核 3.18 版本中，OverlayFS 代码正式合入 Linux 内核的主分支。在这之后，OverlayFS 也就逐渐成为各个主流 Linux 发行版本里缺省使用的容器文件系统了。
+UnionFS 类似的有很多种实现，包括在 Docker 里最早使用的 AUFS，在 Linux 内核 3.18 版本中，OverlayFS 代码正式合入 Linux 内核的主分支。在这之后，OverlayFS 也就逐渐成为各个主流 Linux 发行版本里缺省使用的容器文件系统了，相比 AUFS 其速度更快且实现更简单。 overlay2 （Linux Kernel version 4.0 或以上）则是其推荐的驱动程序。
 
 ```bash
 #!/bin/bash
@@ -40,7 +56,7 @@ OverlayFS 的一个 mount 命令牵涉到四类目录，分别是 lower，upper�
 1. 首先，最下面的 "`lower/(ro)`"，是被 mount 两层目录中底下的这层（lowerdir），这一层的文件是不能被修改的，OverlayFS 是支持多个 lowerdir 的。
 2. 然后，是中间的 "`uppder/(rw)`"，是被 mount 两层目录中上面的这层 （upperdir）。在 OverlayFS 中，如果有文件的创建，修改，删除操作会在这一层反映出来，它是可读写的。
 3. 接着，是最上面的 "`merged/`" ，是挂载点（mount point）目录，也是用户看到的目录，用户的实际文件操作在这里进行。
-4. 最后，还有一个 "`work/`"，是一个存放临时文件的目录，OverlayFS 中如果有文件修改，就会在中间过程中临时存放文件到这里。
+4. 最后，还有一个 "`work/`"，是一个存放临时文件的目录，OverlayFS 中如果有文件修改和删除时，就会在中间过程中临时存放文件到这里。对用户是不可见的。
 
 也就是说，OverlayFS 会 mount 两层目录，分别是 lower 层（容器镜像中的文件，对于容器是只读的）和 upper 层（存放容器对文件系统里的所有改动，是可读写的），这两层目录中的文件都会映射到挂载点上。从挂载点的视角看，upper 层的文件会覆盖 lower 层的文件，比如 "`in_both.txt`" 这个文件，在 lower 层和 upper 层都有，但是挂载点 `merged/` 里看到的只是 upper 层里的 "`in_both.txt`"。
 
