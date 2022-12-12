@@ -87,6 +87,9 @@ Memory Cgroup 控制组里 RSS 内存和 Page Cache 内存的和，正好是 `me
 
 在考虑内核的情况下，计算公式：`memory.usage_in_bytes = memory.stat[rss] + memory.stat[cache] + memory.kmem.usage_in_bytes`，`memory.kmem.usage_in_bytes 表示该 memcg 内核内存使用量`。
 
+- `container_memory_usage_bytes == container_memory_rss + container_memory_cache + kernel memory`
+- `container_memory_working_set_bytes = container_memory_usage_bytes – total_inactive_file（未激活的匿名缓存页）`
+
 ## Swap
 
 Swap 空间就是一块磁盘空间，当内存写满的时候，可以把内存中不常用的数据暂时写到这个 Swap 空间上。这样一来，内存空间就可以释放出来，用来满足新的内存申请的需求。它的好处是可以**应对一些瞬时突发的内存增大需求**，不至于因为内存一时不够而触发 OOM Killer，导致进程被杀死。
